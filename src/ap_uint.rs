@@ -1,6 +1,55 @@
-use std::ops::{AddAssign, Add, SubAssign, Sub};
+use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul};
 use std::cmp::Ordering;
 use std::iter::repeat;
+
+// implements "T op= &U", "T op= U", "&T op U", "T op &U", "T op U"
+// based on "&T op &U"
+macro_rules! forward_ref_op_assign_and_binary {
+    (impl $binary_imp:ident, $binary_method:ident,
+     impl $assign_imp:ident, $assign_method:ident for $t:ty, $u:ty, $v:ty,
+     $( #[$attr:meta] )*) => {
+        $(#[$attr])*
+        impl $assign_imp<&$u> for $t {
+            #[inline]
+            fn $assign_method(&mut self, rhs: &$u) {
+                *self = $binary_imp::$binary_method(&*self, rhs);
+            }
+        }
+        $(#[$attr])*
+        impl $assign_imp<$u> for $t {
+            #[inline]
+            fn $assign_method(&mut self, rhs: $u) {
+                $assign_imp::$assign_method(self, &rhs);
+            }
+        }
+
+        $(#[$attr])*
+        impl $binary_imp<$u> for &$t {
+            type Output = $v;
+            #[inline]
+            fn $binary_method(self, other: $u) -> $v {
+                $binary_imp::$binary_method(self, &other)
+            }
+        }
+        $(#[$attr])*
+        impl $binary_imp<&$u> for $t {
+            type Output = $v;
+            #[inline]
+            fn $binary_method(self, other: &$u) -> $v {
+                $binary_imp::$binary_method(&self, other)
+            }
+        }
+
+        $(#[$attr])*
+        impl $binary_imp<$u> for $t {
+            type Output = $v;
+            #[inline]
+            fn $binary_method(self, other: $u) -> $v {
+                $binary_imp::$binary_method(&self, &other)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct APUint {
@@ -91,107 +140,87 @@ macro_rules! ap_uint {
     ( $($x: expr),* ) => {APUint::from(vec![$($x),*])};
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-impl AddAssign<&APUint> for APUint {
-    fn add_assign(&mut self, rhs: &APUint) {
+impl Add<&APUint> for &APUint {
+    type Output = APUint;
+
+    fn add(self, rhs: &APUint) -> Self::Output {
         #[cfg(target_arch = "x86")]
         use core::arch::x86::_addcarry_u64;
         #[cfg(target_arch = "x86_64")]
-        use std::arch::x86_64::_addcarry_u64;
-        let length = self.bits.len().max(rhs.bits.len());
+        use core::arch::x86_64::_addcarry_u64;
         let mut carry = 0u8;
-        let mut bits = Vec::new();
-        let mut out = 0u64;
-        bits.reserve(length);
-        for (left, right) in self.bits.iter().chain(repeat(&0u64))
-            .zip(rhs.bits.iter().chain(repeat(&0u64))).take(length) {
-            unsafe {
-                carry = _addcarry_u64(carry, left.clone(), right.clone(), &mut out);
-            }
-            bits.push(out)
+        let mut bits = vec![0; self.bits.len().max(rhs.bits.len()) + 1];
+        for ((left, right), out) in self.bits.iter().chain(repeat(&0u64))
+            .zip(rhs.bits.iter().chain(repeat(&0u64)))
+            .zip(bits.iter_mut()) {
+            unsafe { carry = _addcarry_u64(carry, left.clone(), right.clone(), out); }
         }
-        if carry != 0 {
-            bits.push(carry as u64);
-        }
-        *self = Self::from(bits);
+        APUint::from(bits)
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-impl AddAssign<APUint> for APUint {
-    fn add_assign(&mut self, rhs: APUint) {
-        self.add_assign(&rhs);
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-impl Add<&APUint> for APUint {
-    type Output = APUint;
-
-    fn add(mut self, rhs: &APUint) -> Self::Output {
-        self += rhs;
-        self
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-impl Add<APUint> for APUint {
-    type Output = APUint;
-
-    fn add(mut self, rhs: APUint) -> Self::Output {
-        self += &rhs;
-        self
-    }
+forward_ref_op_assign_and_binary! {
+    impl Add, add, impl AddAssign, add_assign for APUint, APUint, APUint,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 }
 
 #[cfg(target_arch = "x86_64")]
-impl SubAssign<&APUint> for APUint {
-    fn sub_assign(&mut self, rhs: &APUint) {
-        use std::arch::x86_64::_subborrow_u64;
+impl Sub<&APUint> for &APUint {
+    type Output = APUint;
+
+    fn sub(self, rhs: &APUint) -> Self::Output {
+        use core::arch::x86_64::_subborrow_u64;
         assert!(self.bits.len() >= rhs.bits.len(), "unsigned integer subtraction underflow");
         let mut borrow = 0u8;
-        let mut bits = Vec::new();
-        let mut out = 0u64;
-        bits.reserve(self.bits.len());
-        for (left, right) in self.bits.iter()
-            .zip(rhs.bits.iter().chain(repeat(&0u64))).take(self.bits.len()) {
-            unsafe {
-                borrow = _subborrow_u64(borrow, left.clone(), right.clone(), &mut out);
-            }
-            bits.push(out)
+        let mut bits = vec![0; self.bits.len()];
+        for ((left, right), out) in self.bits.iter()
+            .zip(rhs.bits.iter().chain(repeat(&0u64)))
+            .zip(bits.iter_mut()) {
+            unsafe { borrow = _subborrow_u64(borrow, left.clone(), right.clone(), out); }
         }
         assert_eq!(borrow, 0, "unsigned integer subtraction underflow");
-        *self = Self::from(bits);
+        APUint::from(bits)
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-impl SubAssign<APUint> for APUint {
-    fn sub_assign(&mut self, rhs: APUint) {
-        self.sub_assign(&rhs);
-    }
+forward_ref_op_assign_and_binary! {
+    impl Sub, sub, impl SubAssign, sub_assign for APUint, APUint, APUint,
+    #[cfg(target_arch = "x86_64")]
 }
 
 #[cfg(target_arch = "x86_64")]
-impl Sub<&APUint> for APUint {
+impl Mul<&APUint> for &APUint {
     type Output = APUint;
 
-    fn sub(mut self, rhs: &APUint) -> Self::Output {
-        self -= rhs;
-        self
+    fn mul(self, rhs: &APUint) -> Self::Output {
+        use core::arch::x86_64::_addcarry_u64;
+        use core::arch::x86_64::_mulx_u64;
+        let mut bits = vec![0; self.bits.len() + rhs.bits.len()];
+        for (offset, b) in rhs.bits.iter().enumerate() {
+            let mut temp = vec![0; self.bits.len() + 1];
+            let mut carry = 0u8;
+            let mut high = 0u64;
+            for (a, out) in self.bits.iter().chain(repeat(&0u64))
+                .zip(temp.iter_mut()) {
+                unsafe {
+                    let old_high = high;
+                    let low = _mulx_u64(a.clone(), b.clone(), &mut high);
+                    carry = _addcarry_u64(carry, old_high, low, out);
+                }
+            }
+            for (c, out) in temp.iter()
+                .zip(bits.iter_mut().skip(offset)) {
+                unsafe { carry = _addcarry_u64(carry, out.clone(), c.clone(), out); }
+            }
+        }
+        APUint::from(bits)
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-impl Sub<APUint> for APUint {
-    type Output = APUint;
-
-    fn sub(mut self, rhs: APUint) -> Self::Output {
-        self -= &rhs;
-        self
-    }
+forward_ref_op_assign_and_binary! {
+    impl Mul, mul, impl MulAssign, mul_assign for APUint, APUint, APUint,
+    #[cfg(target_arch = "x86_64")]
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -244,7 +273,7 @@ mod tests {
         assert_eq!(APUint::default() + APUint::default(), APUint::default());
         assert_eq!(APUint::default() + ap_uint![100, 20], ap_uint![100, 20]);
         assert_eq!(ap_uint![100] + ap_uint![100, 20], ap_uint![200, 20]);
-        assert_eq!(ap_uint![1u64 << 63] + ap_uint![1u64 << 63, 20], ap_uint![0, 21]);
+        assert_eq!(ap_uint![1u64 << 63] + ap_uint![1u64 << 63], ap_uint![0, 1]);
         assert_eq!(ap_uint![1u64 << 63, 20] + ap_uint![1u64 << 63, 20], ap_uint![0, 41]);
     }
 
@@ -280,6 +309,7 @@ mod tests {
     fn test_sub_panic1() {
         let mut a = ap_uint![0b100];
         a -= ap_uint![0b1001];
+        println!("{:?}", a);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -288,5 +318,16 @@ mod tests {
     fn test_sub_panic2() {
         let mut a = ap_uint![0b100];
         a -= ap_uint![0b101];
+    }
+
+    #[test]
+    fn test_mul() {
+        assert_eq!(APUint::default() * APUint::default(), APUint::default());
+        assert_eq!(APUint::default() * ap_uint![123], APUint::default());
+        assert_eq!(ap_uint![123] * APUint::default(), APUint::default());
+        assert_eq!(ap_uint![5, 6] * ap_uint![7, 8], ap_uint![5 * 7, 5 * 8 + 6 * 7, 6 * 8]);
+        assert_eq!(APUint::max(128) * APUint::max(64),
+                   APUint::min(129) * APUint::min(65)
+                       - APUint::min(129) - APUint::min(65) + ap_uint![1]);
     }
 }
