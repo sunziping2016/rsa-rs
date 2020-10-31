@@ -1,6 +1,6 @@
-use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul};
+use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign};
 use std::cmp::Ordering;
-use std::iter::repeat;
+use std::iter::{repeat, once};
 
 // implements "T op= &U", "T op= U", "&T op U", "T op &U", "T op U"
 // based on "&T op &U"
@@ -81,6 +81,8 @@ impl APUint {
             bits,
         }
     }
+
+    pub fn is_zero(&self) -> bool { self.n_bits == 0 }
 }
 
 impl Default for APUint {
@@ -222,6 +224,61 @@ forward_ref_op_assign_and_binary! {
     #[cfg(target_arch = "x86_64")]
 }
 
+impl Shl<&usize> for &APUint {
+    type Output = APUint;
+
+    fn shl(self, rhs: &usize) -> Self::Output {
+        if self.is_zero() {
+            return APUint::default();
+        }
+        let left_shift = rhs % 64;
+        let bits = if left_shift == 0 {
+            repeat(0u64).take(rhs / 64).chain(
+                self.bits.iter().map(u64::clone)
+            ).collect::<Vec<_>>()
+        } else {
+            let right_shift = 64 - left_shift;
+            repeat(0u64).take(rhs / 64).chain(
+                once(&0u64).chain(self.bits.iter())
+                    .zip(self.bits.iter().chain(once(&0u64)))
+                    .map(|(x, y)| (x >> right_shift) | y << left_shift)
+            ).collect()
+        };
+        APUint::from(bits)
+    }
+}
+
+forward_ref_op_assign_and_binary! {
+    impl Shl, shl, impl ShlAssign, shl_assign for APUint, usize, APUint,
+}
+
+impl Shr<&usize> for &APUint {
+    type Output = APUint;
+
+    fn shr(self, rhs: &usize) -> Self::Output {
+        if self.n_bits <= *rhs {
+            return APUint::default();
+        }
+        let right_shift = rhs % 64;
+        let bits = if right_shift == 0 {
+            self.bits.iter().skip(rhs / 64)
+                .map(u64::clone)
+                .collect::<Vec<_>>()
+        } else {
+            let left_shift = 64 - right_shift;
+            self.bits.iter().skip(rhs / 64)
+                .zip(self.bits.iter().skip(rhs / 64 + 1))
+                .map(|(x, y)| (x >> right_shift) | (y << left_shift))
+                .collect()
+        };
+        APUint::from(bits)
+    }
+}
+
+forward_ref_op_assign_and_binary! {
+    impl Shr, shr, impl ShrAssign, shr_assign for APUint, usize, APUint,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +386,21 @@ mod tests {
         assert_eq!(APUint::max(128) * APUint::max(64),
                    APUint::min(129) * APUint::min(65)
                        - APUint::min(129) - APUint::min(65) + ap_uint![1]);
+    }
+
+    #[test]
+    fn test_shl() {
+        assert_eq!(APUint::default() << 10, APUint::default());
+        assert_eq!(APUint::max(64) << 0, APUint::max(64));
+        assert_eq!(APUint::max(64) << 128, APUint::max(64) * ap_uint![0, 0, 1]);
+        assert_eq!(APUint::max(64) << 10, APUint::max(64) * ap_uint![1024]);
+        assert_eq!(APUint::max(500) << 500,
+                   APUint::max(500) * ap_uint![0, 0, 0, 0, 0, 0, 0, 4503599627370496]);
+    }
+
+    #[test]
+    fn test_shr() {
+        assert_eq!(APUint::max(500) >> 500, APUint::default());
+        assert_eq!(APUint::max(600) >> 500, APUint::max(100));
     }
 }
