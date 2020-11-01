@@ -169,6 +169,7 @@ macro_rules! ap_uint {
     ( $($x: expr),* ) => {APUint::from(vec![$($x),*])};
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 impl Add<&APUint> for &APUint {
     type Output = APUint;
 
@@ -294,7 +295,7 @@ impl Shr<&usize> for &APUint {
         } else {
             let left_shift = 64 - right_shift;
             self.bits.iter().skip(rhs / 64)
-                .zip(self.bits.iter().skip(rhs / 64 + 1))
+                .zip(self.bits.iter().skip(rhs / 64 + 1).chain(once(&0u64)))
                 .map(|(x, y)| (x >> right_shift) | (y << left_shift))
                 .collect()
         };
@@ -308,7 +309,7 @@ forward_ref_op_assign_and_binary! {
 
 impl APUint {
     #[cfg(target_arch = "x86_64")]
-    pub fn div_mod(&self, rhs: &APUint) -> (APUint, APUint) {
+    pub fn div_rem(&self, rhs: &APUint) -> (APUint, APUint) {
         assert!(!rhs.is_zero(), "division by zero");
         let mut q = APUint::default();
         let mut r = APUint::default();
@@ -329,7 +330,7 @@ impl Div<&APUint> for &APUint {
     type Output = APUint;
 
     fn div(self, rhs: &APUint) -> Self::Output {
-        self.div_mod(rhs).0
+        self.div_rem(rhs).0
     }
 }
 
@@ -338,7 +339,7 @@ impl Rem<&APUint> for &APUint {
     type Output = APUint;
 
     fn rem(self, rhs: &APUint) -> Self::Output {
-        self.div_mod(rhs).1
+        self.div_rem(rhs).1
     }
 }
 
@@ -350,6 +351,50 @@ forward_ref_op_assign_and_binary! {
 forward_ref_op_assign_and_binary! {
     impl Rem, rem, impl RemAssign, rem_assign for APUint, APUint, APUint,
     #[cfg(target_arch = "x86_64")]
+}
+
+impl APUint {
+    #[cfg(target_arch = "x86_64")]
+    pub fn recip(&self, n_bits: usize) -> APUint {
+        // Newton-Raphson Division
+        assert!(!self.is_zero(), "division by zero");
+        let one = APUint::min(self.n_bits + n_bits + 1);
+        let mut x = APUint::min(n_bits + 1);
+        loop {
+            let delta_x = (&x * (&one - self * &x)) >> (self.n_bits + n_bits);
+            if delta_x.is_zero() {
+                break;
+            }
+            x += delta_x;
+        }
+        x
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn recip_pack(&self) -> (APUint, usize) {
+        (self.recip(self.n_bits), self.n_bits)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn rem_with_recip(&self, rhs: &APUint, recip: &(APUint, usize)) -> APUint {
+        let div = (self * &recip.0) >> (rhs.n_bits + recip.1);
+        let mut rem = self - &div * rhs;
+        while rem >= *rhs {
+            rem -= rhs;
+        }
+        rem
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn div_rem_with_recip(&self, rhs: &APUint, recip: &(APUint, usize)) -> (APUint, APUint) {
+        let mut div = (self * &recip.0) >> (rhs.n_bits + recip.1);
+        let mut rem = self - &div * rhs;
+        while rem >= *rhs {
+            rem -= rhs;
+            div += ap_uint![1];
+        }
+        (div, rem)
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +521,7 @@ mod tests {
     fn test_shr() {
         assert_eq!(APUint::max(500) >> 500, APUint::default());
         assert_eq!(APUint::max(600) >> 500, APUint::max(100));
+        assert_eq!(ap_uint![1792] >> 8, ap_uint![7]);
     }
 
     #[test]
@@ -498,8 +544,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_div() {
-        assert_eq!(APUint::default().div_mod(&ap_uint![1]), (APUint::default(), APUint::default()));
-        assert_eq!(ap_uint![18, 50].div_mod(&ap_uint!(30)),
+        assert_eq!(APUint::default().div_rem(&ap_uint![1]), (APUint::default(), APUint::default()));
+        assert_eq!(ap_uint![18, 50].div_rem(&ap_uint!(30)),
                    (ap_uint![12297829382473034411, 1], ap_uint![8]));
     }
 
@@ -507,6 +553,29 @@ mod tests {
     #[test]
     #[should_panic(expected = "division by zero")]
     fn test_div_panic() {
-        ap_uint![1].div_mod(&APUint::default());
+        ap_uint![1].div_rem(&APUint::default());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_div_rem_with_recip() {
+        let a = ap_uint!(1);
+        let recip = a.recip_pack();
+        assert_eq!(ap_uint!(0).div_rem_with_recip(&a, &recip), (ap_uint!(0), ap_uint!(0)));
+        assert_eq!(ap_uint!(1).div_rem_with_recip(&a, &recip), (ap_uint!(1), ap_uint!(0)));
+        assert_eq!(ap_uint!(2).div_rem_with_recip(&a, &recip), (ap_uint!(2), ap_uint!(0)));
+        for a in vec![ap_uint!(5), APUint::min(100), APUint::max(100)].into_iter() {
+            let recip = a.recip_pack();
+            assert_eq!(ap_uint!(0).div_rem_with_recip(&a, &recip), (ap_uint!(0), ap_uint!(0)));
+            assert_eq!(ap_uint!(1).div_rem_with_recip(&a, &recip), (ap_uint!(0), ap_uint!(1)));
+            for i in 1..5 {
+                assert_eq!((&a * ap_uint!(i) - ap_uint!(1)).div_rem_with_recip(&a, &recip),
+                           (ap_uint!(i - 1), &a - ap_uint!(1)));
+                assert_eq!((&a * ap_uint!(i)).div_rem_with_recip(&a, &recip),
+                           (ap_uint!(i), ap_uint!(0)));
+                assert_eq!((&a * ap_uint!(i) + ap_uint!(1)).div_rem_with_recip(&a, &recip),
+                           (ap_uint!(i), ap_uint!(1)));
+            }
+        }
     }
 }
