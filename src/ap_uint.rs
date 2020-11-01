@@ -1,4 +1,4 @@
-use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign};
+use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign, Div, DivAssign, Rem, RemAssign};
 use std::cmp::Ordering;
 use std::iter::{repeat, once};
 
@@ -83,6 +83,33 @@ impl APUint {
     }
 
     pub fn is_zero(&self) -> bool { self.n_bits == 0 }
+
+    pub fn set(&mut self, bit: usize, value: bool) {
+        let pos = bit / 64;
+        if value {
+            if pos >= self.bits.len() {
+                self.bits.resize(pos + 1, 0u64);
+            }
+            self.bits[pos] |= 1 << (bit % 64);
+        } else if bit < self.n_bits {
+            self.bits[pos] &= !(1 << (bit % 64));
+        }
+        while let Some(0u64) = self.bits.last() {
+            self.bits.pop();
+        }
+        self.n_bits = match self.bits.last() {
+            Some(n) => 64 * self.bits.len() - n.leading_zeros() as usize,
+            None => 0usize,
+        };
+    }
+
+    pub fn get(&self, bit: usize) -> bool {
+        if bit < self.n_bits {
+            ((self.bits[bit / 64] >> (bit % 64)) & 1) == 1
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for APUint {
@@ -279,6 +306,52 @@ forward_ref_op_assign_and_binary! {
     impl Shr, shr, impl ShrAssign, shr_assign for APUint, usize, APUint,
 }
 
+impl APUint {
+    #[cfg(target_arch = "x86_64")]
+    pub fn div_mod(&self, rhs: &APUint) -> (APUint, APUint) {
+        assert!(!rhs.is_zero(), "division by zero");
+        let mut q = APUint::default();
+        let mut r = APUint::default();
+        for i in (0..self.n_bits).rev() {
+            r <<= 1;
+            r.set(0, self.get(i));
+            if r >= *rhs {
+                r -= rhs;
+                q.set(i, true);
+            }
+        }
+        (q, r)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Div<&APUint> for &APUint {
+    type Output = APUint;
+
+    fn div(self, rhs: &APUint) -> Self::Output {
+        self.div_mod(rhs).0
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Rem<&APUint> for &APUint {
+    type Output = APUint;
+
+    fn rem(self, rhs: &APUint) -> Self::Output {
+        self.div_mod(rhs).1
+    }
+}
+
+forward_ref_op_assign_and_binary! {
+    impl Div, div, impl DivAssign, div_assign for APUint, APUint, APUint,
+    #[cfg(target_arch = "x86_64")]
+}
+
+forward_ref_op_assign_and_binary! {
+    impl Rem, rem, impl RemAssign, rem_assign for APUint, APUint, APUint,
+    #[cfg(target_arch = "x86_64")]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +450,7 @@ mod tests {
         a -= ap_uint![0b101];
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_mul() {
         assert_eq!(APUint::default() * APUint::default(), APUint::default());
@@ -402,5 +476,37 @@ mod tests {
     fn test_shr() {
         assert_eq!(APUint::max(500) >> 500, APUint::default());
         assert_eq!(APUint::max(600) >> 500, APUint::max(100));
+    }
+
+    #[test]
+    fn test_get() {
+        assert_eq!(ap_uint![2, 1].get(64), true);
+        assert_eq!(ap_uint![2, 1].get(65), false);
+        assert_eq!(ap_uint![2, 1].get(63), false);
+    }
+
+    #[test]
+    fn test_set() {
+        let mut a = ap_uint![2, 1];
+        a.set(128, true);
+        assert_eq!(a, ap_uint![2, 1, 1]);
+        let mut a = ap_uint![2, 1];
+        a.set(64, false);
+        assert_eq!(a, ap_uint![2]);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_div() {
+        assert_eq!(APUint::default().div_mod(&ap_uint![1]), (APUint::default(), APUint::default()));
+        assert_eq!(ap_uint![18, 50].div_mod(&ap_uint!(30)),
+                   (ap_uint![12297829382473034411, 1], ap_uint![8]));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[should_panic(expected = "division by zero")]
+    fn test_div_panic() {
+        ap_uint![1].div_mod(&APUint::default());
     }
 }
