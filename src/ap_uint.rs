@@ -1,28 +1,11 @@
 use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign, Div, DivAssign, Rem, RemAssign};
 use std::cmp::Ordering;
 use std::iter::{repeat, once};
+use crate::traits::{Recip, One, Zero, RemWithRecip, DivRemWithRecip};
 
-// implements "T op= &U", "T op= U", "&T op U", "T op &U", "T op U"
-// based on "&T op &U"
-macro_rules! forward_ref_op_assign_and_binary {
-    (impl $binary_imp:ident, $binary_method:ident,
-     impl $assign_imp:ident, $assign_method:ident for $t:ty, $u:ty, $v:ty,
+macro_rules! forward_ref_op_binary {
+    (impl $binary_imp:ident, $binary_method:ident for $t:ty, $u:ty, $v:ty,
      $( #[$attr:meta] )*) => {
-        $(#[$attr])*
-        impl $assign_imp<&$u> for $t {
-            #[inline]
-            fn $assign_method(&mut self, rhs: &$u) {
-                *self = $binary_imp::$binary_method(&*self, rhs);
-            }
-        }
-        $(#[$attr])*
-        impl $assign_imp<$u> for $t {
-            #[inline]
-            fn $assign_method(&mut self, rhs: $u) {
-                $assign_imp::$assign_method(self, &rhs);
-            }
-        }
-
         $(#[$attr])*
         impl $binary_imp<$u> for &$t {
             type Output = $v;
@@ -51,11 +34,46 @@ macro_rules! forward_ref_op_assign_and_binary {
     }
 }
 
+// implements "T op= &U", "T op= U", "&T op U", "T op &U", "T op U"
+// based on "&T op &U"
+macro_rules! forward_ref_op_assign_and_binary {
+    (impl $binary_imp:ident, $binary_method:ident,
+     impl $assign_imp:ident, $assign_method:ident for $t:ty, $u:ty, $v:ty,
+     $( #[$attr:meta] )*) => {
+        $(#[$attr])*
+        impl $assign_imp<&$u> for $t {
+            #[inline]
+            fn $assign_method(&mut self, rhs: &$u) {
+                *self = $binary_imp::$binary_method(&*self, rhs);
+            }
+        }
+        $(#[$attr])*
+        impl $assign_imp<$u> for $t {
+            #[inline]
+            fn $assign_method(&mut self, rhs: $u) {
+                $assign_imp::$assign_method(self, &rhs);
+            }
+        }
+
+        forward_ref_op_binary! {
+            impl $binary_imp, $binary_method for $t, $u, $v, $(#[$attr])*
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct APUint {
     n_bits: usize,
     bits: Vec<u64>,
 }
+
+#[macro_export]
+macro_rules! ap_uint {
+    ( $($x: expr),* ) => {APUint::from(vec![$($x),*])};
+}
+
+#[derive(Debug, Clone)]
+pub struct APUintRecip(APUint, usize);
 
 impl APUint {
     pub fn max(n_bits: usize) -> Self {
@@ -121,6 +139,18 @@ impl Default for APUint {
     }
 }
 
+impl Zero for APUint {
+    fn zero() -> Self {
+        Self::default()
+    }
+}
+
+impl One for APUint {
+    fn one() -> Self {
+        ap_uint!(1)
+    }
+}
+
 impl Ord for APUint {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.n_bits.cmp(&other.n_bits) {
@@ -162,11 +192,6 @@ impl From<Vec<u64>> for APUint {
             bits,
         }
     }
-}
-
-#[macro_export]
-macro_rules! ap_uint {
-    ( $($x: expr),* ) => {APUint::from(vec![$($x),*])};
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -249,6 +274,34 @@ impl Mul<&APUint> for &APUint {
 
 forward_ref_op_assign_and_binary! {
     impl Mul, mul, impl MulAssign, mul_assign for APUint, APUint, APUint,
+    #[cfg(target_arch = "x86_64")]
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Mul<&APUintRecip> for &APUint {
+    type Output = APUint;
+
+    fn mul(self, rhs: &APUintRecip) -> Self::Output {
+        (self * &rhs.0) >> rhs.1
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Mul<&APUint> for &APUintRecip {
+    type Output = APUint;
+
+    fn mul(self, rhs: &APUint) -> Self::Output {
+        rhs.mul(self)
+    }
+}
+
+forward_ref_op_assign_and_binary! {
+    impl Mul, mul, impl MulAssign, mul_assign for APUint, APUintRecip, APUint,
+    #[cfg(target_arch = "x86_64")]
+}
+
+forward_ref_op_binary! {
+    impl Mul, mul for APUintRecip, APUint, APUint,
     #[cfg(target_arch = "x86_64")]
 }
 
@@ -353,10 +406,13 @@ forward_ref_op_assign_and_binary! {
     #[cfg(target_arch = "x86_64")]
 }
 
-impl APUint {
-    #[cfg(target_arch = "x86_64")]
-    pub fn recip(&self, n_bits: usize) -> APUint {
+#[cfg(target_arch = "x86_64")]
+impl Recip for APUint {
+    type Recip = APUintRecip;
+
+    fn recip(&self) -> Self::Recip {
         // Newton-Raphson Division
+        let n_bits = self.n_bits;
         assert!(!self.is_zero(), "division by zero");
         let one = APUint::min(self.n_bits + n_bits + 1);
         let mut x = APUint::min(n_bits + 1);
@@ -367,35 +423,15 @@ impl APUint {
             }
             x += delta_x;
         }
-        x
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    pub fn recip_pack(&self) -> (APUint, usize) {
-        (self.recip(self.n_bits), self.n_bits)
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    pub fn rem_with_recip(&self, rhs: &APUint, recip: &(APUint, usize)) -> APUint {
-        let div = (self * &recip.0) >> (rhs.n_bits + recip.1);
-        let mut rem = self - &div * rhs;
-        while rem >= *rhs {
-            rem -= rhs;
-        }
-        rem
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    pub fn div_rem_with_recip(&self, rhs: &APUint, recip: &(APUint, usize)) -> (APUint, APUint) {
-        let mut div = (self * &recip.0) >> (rhs.n_bits + recip.1);
-        let mut rem = self - &div * rhs;
-        while rem >= *rhs {
-            rem -= rhs;
-            div += ap_uint![1];
-        }
-        (div, rem)
+        APUintRecip(x, self.n_bits + n_bits)
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+impl RemWithRecip for APUint {}
+
+#[cfg(target_arch = "x86_64")]
+impl DivRemWithRecip for APUint {}
 
 #[cfg(test)]
 mod tests {
@@ -480,23 +516,6 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    #[should_panic(expected = "unsigned integer subtraction underflow")]
-    fn test_sub_panic1() {
-        let mut a = ap_uint![0b100];
-        a -= ap_uint![0b1001];
-        println!("{:?}", a);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    #[should_panic(expected = "unsigned integer subtraction underflow")]
-    fn test_sub_panic2() {
-        let mut a = ap_uint![0b100];
-        a -= ap_uint![0b101];
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
     fn test_mul() {
         assert_eq!(APUint::default() * APUint::default(), APUint::default());
         assert_eq!(APUint::default() * ap_uint![123], APUint::default());
@@ -551,21 +570,14 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    #[should_panic(expected = "division by zero")]
-    fn test_div_panic() {
-        ap_uint![1].div_rem(&APUint::default());
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
     fn test_div_rem_with_recip() {
         let a = ap_uint!(1);
-        let recip = a.recip_pack();
+        let recip = a.recip();
         assert_eq!(ap_uint!(0).div_rem_with_recip(&a, &recip), (ap_uint!(0), ap_uint!(0)));
         assert_eq!(ap_uint!(1).div_rem_with_recip(&a, &recip), (ap_uint!(1), ap_uint!(0)));
         assert_eq!(ap_uint!(2).div_rem_with_recip(&a, &recip), (ap_uint!(2), ap_uint!(0)));
         for a in vec![ap_uint!(5), APUint::min(100), APUint::max(100)].into_iter() {
-            let recip = a.recip_pack();
+            let recip = a.recip();
             assert_eq!(ap_uint!(0).div_rem_with_recip(&a, &recip), (ap_uint!(0), ap_uint!(0)));
             assert_eq!(ap_uint!(1).div_rem_with_recip(&a, &recip), (ap_uint!(0), ap_uint!(1)));
             for i in 1..5 {
