@@ -72,9 +72,6 @@ macro_rules! ap_uint {
     ( $($x: expr),* ) => {APUint::from(vec![$($x),*])};
 }
 
-#[derive(Debug, Clone)]
-pub struct APUintRecip(APUint, usize);
-
 impl APUint {
     pub fn max(n_bits: usize) -> Self {
         let mut bits = vec![u64::MAX; n_bits / 64];
@@ -277,34 +274,6 @@ forward_ref_op_assign_and_binary! {
     #[cfg(target_arch = "x86_64")]
 }
 
-#[cfg(target_arch = "x86_64")]
-impl Mul<&APUintRecip> for &APUint {
-    type Output = APUint;
-
-    fn mul(self, rhs: &APUintRecip) -> Self::Output {
-        (self * &rhs.0) >> rhs.1
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-impl Mul<&APUint> for &APUintRecip {
-    type Output = APUint;
-
-    fn mul(self, rhs: &APUint) -> Self::Output {
-        rhs.mul(self)
-    }
-}
-
-forward_ref_op_assign_and_binary! {
-    impl Mul, mul, impl MulAssign, mul_assign for APUint, APUintRecip, APUint,
-    #[cfg(target_arch = "x86_64")]
-}
-
-forward_ref_op_binary! {
-    impl Mul, mul for APUintRecip, APUint, APUint,
-    #[cfg(target_arch = "x86_64")]
-}
-
 impl Shl<&usize> for &APUint {
     type Output = APUint;
 
@@ -406,9 +375,67 @@ forward_ref_op_assign_and_binary! {
     #[cfg(target_arch = "x86_64")]
 }
 
+#[derive(Debug, Clone)]
+pub struct Real<BaseT, ExpT>{
+    base: BaseT,
+    exp: ExpT,
+}
+
+impl<BaseT, ExpT> Mul<&BaseT> for &Real<BaseT, ExpT>
+    where
+            for<'a> &'a BaseT: Mul<&'a BaseT, Output=BaseT> + Shr<&'a ExpT, Output=BaseT> {
+    type Output = BaseT;
+
+    fn mul(self, rhs: &BaseT) -> Self::Output {
+        &(rhs * &self.base) >> &self.exp
+    }
+}
+impl<BaseT, ExpT> Mul<BaseT> for &Real<BaseT, ExpT>
+    where
+            for<'a> &'a BaseT: Mul<&'a BaseT, Output=BaseT> + Shr<&'a ExpT, Output=BaseT> {
+    type Output = BaseT;
+    #[inline]
+    fn mul(self, other: BaseT) -> Self::Output {
+        Mul::mul(self, &other)
+    }
+}
+impl<BaseT, ExpT> Mul<&BaseT> for Real<BaseT, ExpT>
+    where
+            for<'a> &'a BaseT: Mul<&'a BaseT, Output=BaseT> + Shr<&'a ExpT, Output=BaseT> {
+    type Output = BaseT;
+    #[inline]
+    fn mul(self, other: &BaseT) -> Self::Output {
+        Mul::mul(&self, other)
+    }
+}
+impl<BaseT, ExpT> Mul<BaseT> for Real<BaseT, ExpT>
+    where
+            for<'a> &'a BaseT: Mul<&'a BaseT, Output=BaseT> + Shr<&'a ExpT, Output=BaseT> {
+    type Output = BaseT;
+    #[inline]
+    fn mul(self, other: BaseT) -> Self::Output {
+        Mul::mul(&self, &other)
+    }
+}
+
+impl Mul<&APFLoat> for &APUint {
+    type Output = APUint;
+
+    fn mul(self, rhs: &APFLoat) -> Self::Output {
+        rhs.mul(self)
+    }
+}
+
+type APFloat = Real<APUint, usize>;
+
+forward_ref_op_assign_and_binary! {
+    impl Mul, mul, impl MulAssign, mul_assign for APUint, APFLoat, APUint,
+    #[cfg(target_arch = "x86_64")]
+}
+
 #[cfg(target_arch = "x86_64")]
 impl Recip for APUint {
-    type Recip = APUintRecip;
+    type Recip = APFLoat;
 
     fn recip(&self) -> Self::Recip {
         // Newton-Raphson Division
@@ -423,13 +450,17 @@ impl Recip for APUint {
             }
             x += delta_x;
         }
-        APUintRecip(x, self.n_bits + n_bits)
+        Self::Recip {
+            base: x,
+            exp: self.n_bits + n_bits,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::RemWithRecip;
 
     #[test]
     fn test_default() {
@@ -581,6 +612,28 @@ mod tests {
                            (ap_uint!(i), ap_uint!(0)));
                 assert_eq!((&a * ap_uint!(i) + ap_uint!(1)).div_rem_with_recip(&a, &recip),
                            (ap_uint!(i), ap_uint!(1)));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_rem_with_recip() {
+        let a = ap_uint!(1);
+        let recip = a.recip();
+        assert_eq!(ap_uint!(0).rem_with_recip(&a, &recip), ap_uint!(0));
+        assert_eq!(ap_uint!(1).rem_with_recip(&a, &recip), ap_uint!(0));
+        assert_eq!(ap_uint!(2).rem_with_recip(&a, &recip), ap_uint!(0));
+        for a in vec![ap_uint!(5), APUint::min(100), APUint::max(100)].into_iter() {
+            let recip = a.recip();
+            assert_eq!(ap_uint!(0).rem_with_recip(&a, &recip), ap_uint!(0));
+            assert_eq!(ap_uint!(1).rem_with_recip(&a, &recip), ap_uint!(1));
+            for i in 1..5 {
+                assert_eq!((&a * ap_uint!(i) - ap_uint!(1)).rem_with_recip(&a, &recip),
+                           &a - ap_uint!(1));
+                assert_eq!((&a * ap_uint!(i)).rem_with_recip(&a, &recip), ap_uint!(0));
+                assert_eq!((&a * ap_uint!(i) + ap_uint!(1)).rem_with_recip(&a, &recip),
+                           ap_uint!(1));
             }
         }
     }
