@@ -1,7 +1,7 @@
 use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign, Div, DivAssign, Rem, RemAssign};
 use std::cmp::Ordering;
 use std::iter::{repeat, once};
-use crate::traits::{Recip, One, Zero, RemWithRecip, DivRemWithRecip};
+use crate::traits::{Recip, One, Zero, DivRemWithRecip};
 
 macro_rules! forward_ref_op_binary {
     (impl $binary_imp:ident, $binary_method:ident for $t:ty, $u:ty, $v:ty,
@@ -426,12 +426,6 @@ impl Recip for APUint {
         APUintRecip(x, self.n_bits + n_bits)
     }
 }
-
-#[cfg(target_arch = "x86_64")]
-impl RemWithRecip for APUint {}
-
-#[cfg(target_arch = "x86_64")]
-impl DivRemWithRecip for APUint {}
 
 #[cfg(test)]
 mod tests {

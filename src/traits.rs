@@ -14,12 +14,15 @@ pub trait One: Sized {
     fn one() -> Self;
 }
 
-pub trait RemWithRecip
-    where
-        for<'a> Self: Sized + Ord + Recip + SubAssign<&'a Self>,
-        for<'a> &'a Self: Mul<&'a <Self as Recip>::Recip, Output=Self> +
-            Mul<&'a Self, Output=Self> + Sub<&'a Self, Output=Self>  {
+pub trait RemWithRecip where Self: Recip {
+    fn rem_with_recip(&self, rhs: &Self, recip: &<Self as Recip>::Recip) -> Self;
+}
 
+impl<T> RemWithRecip for T
+    where
+            for<'a> T: Ord + Recip + SubAssign<&'a T>,
+            for<'a> &'a T: Mul<&'a <T as Recip>::Recip, Output=T> +
+            Mul<&'a T, Output=T> + Sub<&'a T, Output=T> {
     fn rem_with_recip(&self, rhs: &Self, recip: &<Self as Recip>::Recip) -> Self {
         let mut rem = self - &(&(self * recip) * rhs);
         while rem >= *rhs {
@@ -29,11 +32,15 @@ pub trait RemWithRecip
     }
 }
 
-pub trait DivRemWithRecip: RemWithRecip
+pub trait DivRemWithRecip where Self: Recip + Sized {
+    fn div_rem_with_recip(&self, rhs: &Self, recip: &<Self as Recip>::Recip) -> (Self, Self);
+}
+
+impl<T> DivRemWithRecip for T
     where
-            for<'a> Self: One + AddAssign<&'a Self>,
-            for<'a> &'a Self: Mul<&'a <Self as Recip>::Recip, Output=Self> +
-            Mul<&'a Self, Output=Self> + Sub<&'a Self, Output=Self> {
+            for<'a> T: Ord + Recip + SubAssign<&'a T> + One + AddAssign<&'a T>,
+            for<'a> &'a T: Mul<&'a <T as Recip>::Recip, Output=T> +
+            Mul<&'a T, Output=T> + Sub<&'a T, Output=T> {
     fn div_rem_with_recip(&self, rhs: &Self, recip: &<Self as Recip>::Recip) -> (Self, Self) {
         let mut div = self * recip;
         let mut rem = self - &(&div * rhs);
