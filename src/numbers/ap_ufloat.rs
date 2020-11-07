@@ -1,6 +1,6 @@
 use crate::numbers::{UFloat, APUInt};
 use std::ops::{Mul, MulAssign};
-use crate::traits::{Zero, ShiftFloor};
+use crate::traits::{Zero, ShiftFloor, CountBits};
 use crate::forward_ref_op_binary;
 use crate::forward_ref_op_assign_and_binary;
 use std::cmp::Ordering;

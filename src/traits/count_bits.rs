@@ -1,14 +1,20 @@
-pub trait CountBits {
+pub trait TotalBits {
     fn total_bits() -> usize;
+}
+
+pub trait CountBits {
     fn count_bits(&self) -> usize;
 }
 
+
 macro_rules! impl_count_bits_for_primitive {
     ($v:literal, $($t:ty),*) => {
-        $(impl CountBits for $t {
+        $(impl TotalBits for $t {
             fn total_bits() -> usize {
                 $v
             }
+        }
+        impl CountBits for $t {
             fn count_bits(&self) -> usize {
                 $v - self.leading_zeros() as usize
             }
@@ -28,7 +34,7 @@ mod tests {
 
     #[test]
     fn test_total_bits() {
-        assert_eq!(<u32 as CountBits>::total_bits(), 32usize);
+        assert_eq!(<u32 as TotalBits>::total_bits(), 32usize);
     }
 
     #[test]

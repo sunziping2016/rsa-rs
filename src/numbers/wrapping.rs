@@ -1,4 +1,4 @@
-use crate::traits::{One, Zero, MinBits, MaxBits, Bits, DivRem, CountBits};
+use crate::traits::{One, Zero, MinBits, MaxBits, Bits, DivRem, CountBits, TotalBits};
 use std::cmp::Ordering;
 use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign, Div, DivAssign, Rem, RemAssign};
 use crate::forward_ref_op_binary;
@@ -103,12 +103,13 @@ impl<T, Rhs, DivOutput, RemOutput> DivRem<Wrapping<Rhs>> for Wrapping<T>
         (Wrapping(self.0.div(rhs.0)), Wrapping(self.0.rem(rhs.0)))
     }
 }
-
-impl<T> CountBits for Wrapping<T> where T: CountBits {
+impl<T> TotalBits for Wrapping<T> where T: TotalBits {
     fn total_bits() -> usize {
         T::total_bits()
     }
+}
 
+impl<T> CountBits for Wrapping<T> where T: CountBits {
     fn count_bits(&self) -> usize {
         self.0.count_bits()
     }

@@ -1,10 +1,13 @@
 use std::ops::{AddAssign, Add, SubAssign, Sub, MulAssign, Mul, Shl, ShlAssign, Shr, ShrAssign, Div, DivAssign, Rem, RemAssign};
 use std::cmp::Ordering;
 use std::iter::{repeat, once};
-use crate::traits::{Recip, One, Zero, MinBits, MaxBits, Bits, DivRem, RecipWithPrecision};
+use crate::traits::{Recip, One, Zero, MinBits, MaxBits, Bits, DivRem, RecipWithPrecision, TrailingZeros, CountBits};
 use crate::forward_ref_op_binary;
 use crate::forward_ref_op_assign_and_binary;
 use crate::numbers::APUFloat;
+use rand::Rng;
+use rand::distributions::uniform::{UniformSampler, SampleUniform, SampleBorrow};
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
 pub struct APUInt {
@@ -12,10 +15,18 @@ pub struct APUInt {
     pub(crate) bits: Vec<u64>,
 }
 
-impl APUInt {
-    pub fn count_bits(&self) -> usize { self.n_bits }
+impl Hash for APUInt {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bits.hash(state)
+    }
+}
 
-    pub fn trailing_zeros(&self) -> usize {
+impl CountBits for APUInt {
+    fn count_bits(&self) -> usize { self.n_bits }
+}
+
+impl TrailingZeros for APUInt {
+    fn trailing_zeros(&self) -> usize {
         let mut count = 0usize;
         for chunk in self.bits.iter() {
             match chunk {
@@ -364,25 +375,10 @@ impl RecipWithPrecision for APUInt {
         let mut x = APUInt::min_bits(precision + 1);
         loop {
             let mul = self * &x;
-            match one.cmp(&mul) {
-                Ordering::Equal => break,
-                Ordering::Greater => {
-                    let origin_delta = &x * (&one - mul);
-                    let carry = origin_delta.get(total_bits - 1);
-                    let mut delta_x = &origin_delta >> total_bits;
-                    if carry { delta_x += APUInt::one(); }
-                    if delta_x.is_zero() { break; }
-                    x += delta_x
-                }
-                Ordering::Less => {
-                    let origin_delta = &x * (mul - &one);
-                    let carry = origin_delta.get(total_bits - 1);
-                    let mut delta_x = &origin_delta >> total_bits;
-                    if carry { delta_x += APUInt::one(); }
-                    if delta_x.is_zero() { break; }
-                    x -= delta_x
-                }
-            }
+            let origin_delta = &x * (&one - mul);
+            let delta_x = &origin_delta >> total_bits;
+            if delta_x.is_zero() { break; }
+            x += delta_x
         }
         let exp = x.count_bits() as isize - total_bits as isize;
         x >>= x.trailing_zeros();
@@ -402,10 +398,100 @@ impl Recip for APUInt {
     }
 }
 
+pub trait RandAPUInt {
+    fn gen_ap_uint(&mut self, bit_size: usize) -> APUInt;
+    fn gen_ap_uint_below(&mut self, bound: &APUInt) -> APUInt;
+    fn gen_ap_uint_range(&mut self, lbound: &APUInt, ubound: &APUInt) -> APUInt;
+}
+
+impl<R: Rng + ?Sized> RandAPUInt for R {
+    fn gen_ap_uint(&mut self, bit_size: usize) -> APUInt {
+        if bit_size == 0 {
+            return APUInt::zero();
+        }
+        let mut bits = vec![0; (bit_size - 1) / 64 + 1];
+        self.fill(&mut bits[..]);
+        let rem = (bit_size % 64) as u64;
+        if rem > 0 {
+            *bits.last_mut().unwrap() >>= 64 - rem;
+        }
+        APUInt::from(bits)
+    }
+
+    fn gen_ap_uint_below(&mut self, bound: &APUInt) -> APUInt {
+        assert!(!bound.is_zero(), "cannot generate number smaller than 0");
+        let bits = bound.count_bits();
+        loop {
+            let n = self.gen_ap_uint(bits);
+            if n < *bound {
+                return n;
+            }
+        }
+    }
+
+    fn gen_ap_uint_range(&mut self, lbound: &APUInt, ubound: &APUInt) -> APUInt {
+        assert!(*lbound < *ubound);
+        if lbound.is_zero() {
+            self.gen_ap_uint_below(ubound)
+        } else {
+            lbound + self.gen_ap_uint_below(&(ubound - lbound))
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UniformAPUInt {
+    base: APUInt,
+    len: APUInt,
+}
+
+impl UniformSampler for UniformAPUInt {
+    type X = APUInt;
+
+    fn new<B1, B2>(low_b: B1, high_b: B2) -> Self
+        where
+            B1: SampleBorrow<Self::X> + Sized,
+            B2: SampleBorrow<Self::X> + Sized {
+        let low = low_b.borrow();
+        let high = high_b.borrow();
+        assert!(low < high);
+        UniformAPUInt {
+            len: high - low,
+            base: low.clone(),
+        }
+    }
+
+    fn new_inclusive<B1, B2>(low_b: B1, high_b: B2) -> Self
+        where
+            B1: SampleBorrow<Self::X> + Sized,
+            B2: SampleBorrow<Self::X> + Sized {
+        let low = low_b.borrow();
+        let high = high_b.borrow();
+        assert!(low <= high);
+        Self::new(low, high + APUInt::one())
+    }
+
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Self::X {
+        &self.base + rng.gen_ap_uint_below(&self.len)
+    }
+
+    fn sample_single<R: Rng + ?Sized, B1, B2>(low: B1, high: B2, rng: &mut R) -> Self::X
+        where
+            B1: SampleBorrow<Self::X> + Sized,
+            B2: SampleBorrow<Self::X> + Sized {
+        rng.gen_ap_uint_range(low.borrow(), high.borrow())
+    }
+}
+
+impl SampleUniform for APUInt {
+    type Sampler = UniformAPUInt;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::DivRemWithRecip;
+    use crate::traits::{DivRemWithRecip, FastExponentWithRecip, IsPrimeMillerRabin};
+    use rand::distributions::{Distribution, Uniform};
 
     #[test]
     fn test_default() {
@@ -540,14 +626,6 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn test_recip() {
-        assert_eq!(ap_uint!(1).recip(), APUFloat { base: ap_uint!(1), exp: 1isize });
-        assert_eq!(ap_uint!(8).recip(), APUFloat { base: ap_uint!(1), exp: -2isize });
-        assert_eq!(ap_uint!(7).recip(), APUFloat { base: ap_uint!(0b1001), exp: -2isize });
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
     fn test_div_rem_with_recip() {
         let a = ap_uint!(1);
         let recip = a.recip();
@@ -571,5 +649,43 @@ mod tests {
                            (ap_uint!(i), ap_uint!(1)));
             }
         }
+    }
+
+    #[test]
+    fn test_rand() {
+        let low = ap_uint![100, 100];
+        let high = ap_uint![200, 100];
+        let between = Uniform::from(low.clone()..high.clone());
+        let mut rng = rand::thread_rng();
+        for _ in 0..500 {
+            let num = between.sample(&mut rng);
+            assert!(num >= low && num < high);
+        }
+    }
+
+    #[test]
+    fn test_fast_exponent_with_recip() {
+        let x = ap_uint!(1111) << 128;
+        let y = (ap_uint!(1) << 100) + (ap_uint!(1) << 31) + ap_uint!(1);
+        let z = (ap_uint!(1) << 100) - ap_uint!(1);
+        let recip = z.recip();
+        assert_eq!(x.fast_exponent_with_recip(&y, &z, &recip),
+                   ap_uint![17937718758987677654, 8285789267]);
+    }
+
+    #[test]
+    fn test_is_prime_miller_rabin() {
+        let primes = [5, 7, 11, 13, 17, 19, 23, 29, 31, 37,
+            41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97].to_vec();
+        let times = 10;
+        let calculated_primes = (4..100)
+            .filter(|i| {
+                let i = i.clone();
+                let ap = ap_uint!(i as u64);
+                let times = if i < times + 3 { i - 3 } else { times } as usize;
+                ap.is_prime_miller_rabin(times)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(primes, calculated_primes);
     }
 }

@@ -1,5 +1,5 @@
 use std::ops::{Mul, MulAssign};
-use crate::traits::{CountBits, Bits, Zero, One};
+use crate::traits::{CountBits, TotalBits, Bits, Zero, One};
 use crate::forward_ref_op_binary;
 use crate::forward_ref_op_assign_and_binary;
 
@@ -54,8 +54,8 @@ macro_rules! impl_mul_for_small_primitive_ufloat {
                 loop {
                     base >>= base.trailing_zeros();
                     let bits = base.count_bits();
-                    if bits <= <$small as CountBits>::total_bits() { break; }
-                    let extra_bits = bits - <$small as CountBits>::total_bits();
+                    if bits <= <$small as TotalBits>::total_bits() { break; }
+                    let extra_bits = bits - <$small as TotalBits>::total_bits();
                     let carry = base.get(extra_bits - 1);
                     base >>= extra_bits;
                     if carry { base += 1; }
