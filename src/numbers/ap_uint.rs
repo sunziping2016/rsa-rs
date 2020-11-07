@@ -57,6 +57,18 @@ impl From<Vec<u64>> for APUInt {
     }
 }
 
+impl From<u64> for APUInt {
+    fn from(value: u64) -> Self {
+        Self::from(vec![value])
+    }
+}
+
+impl From<APUInt> for u64 {
+    fn from(value: APUInt) -> Self {
+        value.bits.first().unwrap_or(&0u64).clone()
+    }
+}
+
 #[macro_export]
 macro_rules! ap_uint {
     ( $($x: expr),* ) => {APUInt::from(vec![$($x),*])};
@@ -682,7 +694,7 @@ mod tests {
             .filter(|i| {
                 let i = i.clone();
                 let ap = ap_uint!(i as u64);
-                let times = if i < times + 3 { i - 3 } else { times } as usize;
+                let times = if i < times + 3 { i - 3 } else { times } as u64;
                 ap.is_prime_miller_rabin(times)
             })
             .collect::<Vec<_>>();

@@ -6,7 +6,7 @@ use rand::distributions::{Uniform, Distribution};
 use std::hash::Hash;
 
 pub trait IsPrimeMillerRabin where Self: SampleUniform {
-    fn is_prime_miller_rabin(&self, times: usize) -> bool;
+    fn is_prime_miller_rabin(&self, times: u64) -> bool;
 }
 
 impl<T> IsPrimeMillerRabin for T
@@ -15,7 +15,7 @@ impl<T> IsPrimeMillerRabin for T
         for<'a> &'a T: Add<&'a T, Output=T> + Sub<&'a T, Output=T> +
                        Shr<usize, Output=T>
 {
-    fn is_prime_miller_rabin(&self, times: usize) -> bool {
+    fn is_prime_miller_rabin(&self, times: u64) -> bool {
         // assert times <= self - 3
         let one = T::one();
         let two = &one + &one;
