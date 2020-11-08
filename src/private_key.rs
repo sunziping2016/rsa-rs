@@ -14,7 +14,6 @@ use std::sync::mpsc::channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::cmp::min;
 
 fn parse_u32(input: &[u8]) -> IResult<&[u8], u32> {
     be_u32(input)
@@ -167,7 +166,8 @@ pub fn find_prime_range<T>(low: &T, high: &T, num_prime_tests: u64, num_workers:
 impl<T> PrivateKey<T>
     where
         T: 'static + SampleUniform + Clone + Send + Bits + IsPrimeMillerRabin + ModularInverse +
-            for<'a> AddAssign<&'a T> + Ord + Zero + From<u64> + Into<u64> + MinBits + MaxBits + One,
+            for<'a> AddAssign<&'a T> + Ord + Zero + From<u64> + Into<u64> + MinBits + MaxBits +
+            One + From<u64>,
         for<'a> &'a T: Add<&'a T, Output=T> + Sub<&'a T, Output=T> + Div<&'a T, Output=T> +
         Mul<&'a T, Output=T> {
     pub fn generate(num_bits: usize, num_prime_tests: u64, num_workers: usize) -> Self {
@@ -185,19 +185,8 @@ impl<T> PrivateKey<T>
         );
         let n = &p * &q;
         let lambda = &(&p - &T::one()) * &(&q - &T::one());
-        let mut rng = rand::thread_rng();
-        let e_between = Uniform::from(
-            (&T::one() + &T::one())..min(T::max_bits(32), lambda.clone()));
-        let mut e;
-        let d;
-        loop {
-            e = e_between.sample(&mut rng);
-            let result = e.modular_inverse(&lambda);
-            if result.0 {
-                d = result.1;
-                break;
-            }
-        }
+        let e = T::from(65537u64);
+        let d= e.modular_inverse(&lambda).1;
         let iqmp = q.modular_inverse(&p).1;
         Self { p, q, n, e, d, iqmp, comment: String::new() }
     }

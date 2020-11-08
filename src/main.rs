@@ -7,7 +7,7 @@ fn main() {
     // println!("{:?}", private_key.n);
     // println!("{:?}", private_key.check());
     let before = Instant::now();
-    let num_bits = 2048usize;
+    let num_bits = 768usize;
     let num_prime_tests = 16u64;
     let _private_key = PrivateKey::<APUInt>::generate(
         num_bits,
