@@ -502,7 +502,7 @@ impl SampleUniform for APUInt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::{DivRemWithRecip, FastExponentWithRecip, IsPrimeMillerRabin};
+    use crate::traits::{DivRemWithRecip, FastExponentWithRecip, IsPrimeMillerRabin, ModularInverse};
     use rand::distributions::{Distribution, Uniform};
 
     #[test]
@@ -699,5 +699,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(primes, calculated_primes);
+    }
+
+    #[test]
+    fn test_modular_inverse() {
+        assert_eq!(ap_uint!(128).modular_inverse(&ap_uint!(81)), (true, ap_uint!(50)))
     }
 }

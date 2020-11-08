@@ -9,6 +9,7 @@ mod shift_floor;
 mod trailing_zeros;
 mod is_prime_miller_rabin;
 mod fast_exponent_with_recip;
+mod modular_inverse;
 
 pub use zero_one::Zero;
 pub use zero_one::One;
@@ -25,3 +26,4 @@ pub use shift_floor::ShiftFloor;
 pub use trailing_zeros::TrailingZeros;
 pub use is_prime_miller_rabin::IsPrimeMillerRabin;
 pub use fast_exponent_with_recip::FastExponentWithRecip;
+pub use modular_inverse::ModularInverse;

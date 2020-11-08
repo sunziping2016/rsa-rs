@@ -1,17 +1,18 @@
-use rsa_rs::find_prime_range;
-use rsa_rs::numbers::APUInt;
-use rsa_rs::traits::{MinBits, MaxBits};
+use rsa_rs::PrivateKey;
 use std::time::Instant;
+use rsa_rs::numbers::APUInt;
 
 fn main() {
-    let num_bits = 2048usize;
+    // let private_key = PrivateKey::parse(&pem::parse(KEY).unwrap().contents).unwrap();
+    // println!("{:?}", private_key.n);
+    // println!("{:?}", private_key.check());
     let before = Instant::now();
-    let prime = find_prime_range(
-        &APUInt::min_bits(num_bits),
-        &APUInt::max_bits(num_bits),
-        32u64,
+    let num_bits = 2048usize;
+    let num_prime_tests = 16u64;
+    let _private_key = PrivateKey::<APUInt>::generate(
+        num_bits,
+        num_prime_tests,
         num_cpus::get(),
     );
-    println!("{:?}", prime);
     println!("Elapsed {:?}", before.elapsed())
 }
