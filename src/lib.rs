@@ -2,6 +2,7 @@ pub mod numbers;
 pub mod traits;
 pub mod macros;
 
-mod private_key;
+mod keys;
 
-pub use private_key::PrivateKey;
+pub use keys::PrivateKey;
+pub use keys::PublicKey;
