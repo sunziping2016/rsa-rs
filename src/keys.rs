@@ -4,9 +4,9 @@ use nom::combinator::{map, all_consuming};
 use nom::sequence::{preceded, tuple, terminated};
 use nom::number::complete::be_u32;
 use nom::combinator::verify;
-use crate::numbers::APUInt;
+use crate::numbers::{APUInt, APUFloat};
 use nom::multi::many_m_n;
-use crate::traits::{IsPrimeMillerRabin, One, Zero, Bits, MinBits, MaxBits, ModularInverse};
+use crate::traits::{IsPrimeMillerRabin, One, Zero, Bits, MinBits, MaxBits, ModularInverse, Recip, FastExponentWithRecip};
 use rand::distributions::uniform::SampleUniform;
 use rand::distributions::{Uniform, Distribution};
 use std::ops::{AddAssign, Sub, Add, Mul, Div};
@@ -14,6 +14,7 @@ use std::sync::mpsc::channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::iter::repeat;
 
 fn parse_u32(input: &[u8]) -> IResult<&[u8], u32> {
     be_u32(input)
@@ -67,24 +68,6 @@ fn to_buffer_ap_uint(number: &APUInt) -> Vec<u8> {
             }
         }
         to_buffer_string(&bytes)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ap_uint_to_buffer() {
-        let mut rng = rand::thread_rng();
-        assert_eq!(parse_ap_uint(&to_buffer_ap_uint(&APUInt::zero())).unwrap().1, APUInt::zero());
-        for i in 1..=128 {
-            let between = Uniform::from(APUInt::min_bits(i)..=APUInt::max_bits(i));
-            for _ in 0..10 {
-                let number = between.sample(&mut rng);
-                assert_eq!(parse_ap_uint(&to_buffer_ap_uint(&number)).unwrap().1, number);
-            }
-        }
     }
 }
 
@@ -144,9 +127,14 @@ impl PrivateKey<APUInt> {
                     )), take_while_m_n(0, 7, |_| true)),
                         |(n, e, d, iqmp, p, q, c)|
                             Self {
-                                n, e, d, iqmp, p, q,
-                                comment: String::from_utf8(c.to_vec()).unwrap()
-                            }
+                                n,
+                                e,
+                                d,
+                                iqmp,
+                                p,
+                                q,
+                                comment: String::from_utf8(c.to_vec()).unwrap(),
+                            },
                     ),
                 )(secret)
             })
@@ -165,10 +153,20 @@ impl PrivateKey<APUInt> {
         }
         let phi = (&self.p - APUInt::one()) * (&self.q - APUInt::one());
         if (&self.e * &self.d) % phi != APUInt::one() {
-            return Err("e * d != 1  mod phi(n)")
+            return Err("e * d != 1  mod phi(n)");
         }
         if (&self.q * &self.iqmp) % &self.p != APUInt::one() {
-            return Err("q * iqmp != 1  mod p")
+            return Err("q * iqmp != 1  mod p");
+        }
+        Ok(())
+    }
+
+    pub fn check_match(&self, public: &PublicKey<APUInt>) -> Result<(), &'static str> {
+        if self.n != public.n {
+            return Err("private.n != public.n");
+        }
+        if self.e != public.e {
+            return Err("private.e != public.e");
         }
         Ok(())
     }
@@ -231,12 +229,12 @@ pub fn find_prime_range<T>(low: &T, high: &T, num_prime_tests: u64, num_workers:
                             if !n.get(0) {
                                 n += &T::one();
                                 if n > high {
-                                    continue
+                                    continue;
                                 }
                             }
                             let times = std::cmp::min(&n - &three, num_prime_tests.clone()).into();
                             n.is_prime_miller_rabin(times)
-                        },
+                        }
                     } {
                         let _ = sender.send(n);
                         finished.store(true, Ordering::Relaxed);
@@ -253,7 +251,7 @@ impl<T> PrivateKey<T>
     where
         T: 'static + SampleUniform + Clone + Send + Bits + IsPrimeMillerRabin + ModularInverse +
             for<'a> AddAssign<&'a T> + Ord + Zero + From<u64> + Into<u64> + MinBits + MaxBits +
-            One + From<u64>,
+        One + From<u64>,
         for<'a> &'a T: Add<&'a T, Output=T> + Sub<&'a T, Output=T> + Div<&'a T, Output=T> +
         Mul<&'a T, Output=T> {
     pub fn generate(num_bits: usize, num_prime_tests: u64,
@@ -273,12 +271,13 @@ impl<T> PrivateKey<T>
         let n = &p * &q;
         let lambda = &(&p - &T::one()) * &(&q - &T::one());
         let e = T::from(65537u64);
-        let d= e.modular_inverse(&lambda).1;
+        let d = e.modular_inverse(&lambda).1;
         let iqmp = q.modular_inverse(&p).1;
         Self { p, q, n, e, d, iqmp, comment }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PublicKey<T> {
     pub(crate) n: T,
     pub(crate) e: T,
@@ -290,11 +289,148 @@ impl<T> PublicKey<T> {
 }
 
 impl PublicKey<APUInt> {
+    pub fn parse(input: &[u8], comment: String) -> Result<PublicKey<APUInt>, nom::Err<nom::error::Error<&[u8]>>> {
+        all_consuming(preceded(
+            verify(parse_string, |x: &[u8]| x == b"ssh-rsa"),
+            map(tuple((
+                parse_ap_uint, // e
+                parse_ap_uint, // n
+            )), move |(e, n)| Self { n, e, comment: comment.clone() }),
+        ))(input)
+            .map(|x| x.1)
+    }
+
     pub fn to_buffer(&self) -> Vec<u8> {
         let mut public_key = Vec::new();
         public_key.extend(to_buffer_string(b"ssh-rsa")); // key type
         public_key.extend(to_buffer_ap_uint(&self.e));
         public_key.extend(to_buffer_ap_uint(&self.n));
         public_key
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicTransformContext {
+    n_recip: APUFloat,
+}
+
+impl PublicKey<APUInt> {
+    pub fn encrypt(&self, input: &[u8],
+                     context: Option<PublicTransformContext>)
+                     -> (Vec<u8>, PublicTransformContext) {
+        assert!(self.n.n_bits >= 9);
+        let context = context.unwrap_or_else(|| PublicTransformContext {
+            n_recip: self.n.recip(),
+        });
+        let input = (input.len() as u64).to_le_bytes().iter()
+            .chain(input.iter())
+            .copied()
+            .collect::<Vec<_>>();
+        let result = input.chunks((self.n.n_bits - 1) / 8)
+            .flat_map(|x|
+                APUInt::from(x.chunks(8)
+                    .map(|x| {
+                        let mut num = [0u8; 8];
+                        for (i, v) in x.iter().enumerate() {
+                            num[i] = *v;
+                        }
+                        u64::from_le_bytes(num)
+                    })
+                    .collect::<Vec<_>>()
+                )
+                    .fast_exponent_with_recip(&self.e, &self.n, &context.n_recip)
+                    .bits.iter()
+                    .flat_map(|x| x.to_le_bytes().to_vec())
+                    .chain(repeat(0u8))
+                    .take((self.n.n_bits + 7) / 8)
+                    .collect::<Vec<_>>()
+            )
+            .collect::<Vec<u8>>();
+        (result, context)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PrivateTransformContext {
+    p_recip: APUFloat,
+    q_recip: APUFloat,
+    ipmq: APUInt,
+}
+
+impl PrivateKey<APUInt> {
+    pub fn decrypt(&self, input: &[u8],
+                     context: Option<PrivateTransformContext>)
+                     -> (Vec<u8>, PrivateTransformContext) {
+        assert!(self.n.n_bits >= 9);
+        let context = context.unwrap_or_else(|| PrivateTransformContext {
+            p_recip: self.p.recip(),
+            q_recip: self.q.recip(),
+            ipmq: &self.q - (&self.iqmp * &self.q - APUInt::one()) / &self.p % &self.q,
+        });
+        let mut result = input.chunks((self.n.n_bits + 7) / 8)
+            .flat_map(|x| {
+                let n = APUInt::from(x.chunks(8)
+                    .map(|x| {
+                        let mut num = [0u8; 8];
+                        for (i, v) in x.iter().enumerate() {
+                            num[i] = *v;
+                        }
+                        u64::from_le_bytes(num)
+                    })
+                    .collect::<Vec<_>>()
+                );
+                let a = n.fast_exponent_with_recip(&self.d, &self.p, &context.p_recip);
+                let b = n.fast_exponent_with_recip(&self.d, &self.q, &context.q_recip);
+                let d = (a * &self.q * &self.iqmp + b * &self.p * &context.ipmq) % &self.n;
+                d.bits.iter()
+                    .flat_map(|x| x.to_le_bytes().to_vec())
+                    .chain(repeat(0u8))
+                    .take((self.n.n_bits - 1) / 8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<u8>>();
+        let mut final_result = result.split_off(8);
+        let mut size = [0u8; 8];
+        for (i, v) in result.iter().enumerate() {
+            size[i] = *v;
+        }
+        let size = u64::from_le_bytes(size) as usize;
+        final_result.truncate(size);
+        (final_result, context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ap_uint_to_buffer() {
+        let mut rng = rand::thread_rng();
+        assert_eq!(parse_ap_uint(&to_buffer_ap_uint(&APUInt::zero())).unwrap().1, APUInt::zero());
+        for i in 1..=128 {
+            let between = Uniform::from(APUInt::min_bits(i)..=APUInt::max_bits(i));
+            for _ in 0..10 {
+                let number = between.sample(&mut rng);
+                assert_eq!(parse_ap_uint(&to_buffer_ap_uint(&number)).unwrap().1, number);
+            }
+        }
+    }
+
+    #[test]
+    fn test_transform() {
+        let private_key = PrivateKey::<APUInt>::generate(
+            128,
+            32,
+            num_cpus::get(),
+            "".into(),
+        );
+        let public_key = private_key.get_public_key();
+        for i in 0..64 {
+            let text: Vec<u8> = (0..(96 + i)).map(|_| { rand::random::<u8>() }).collect();
+            let encrypted = public_key.encrypt(&text, None).0;
+            let decrypted = private_key.decrypt(&encrypted, None).0;
+            assert_eq!(text, decrypted);
+        }
     }
 }
