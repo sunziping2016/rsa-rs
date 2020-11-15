@@ -41,7 +41,7 @@ struct Generate {
     bits: usize,
     #[clap(short, long, default_value = "32", about = "number of Miller-Rabin prime tests to perform")]
     prime_tests: u64,
-    #[clap(short, long, default_value = &DEFAULT_COMMENT[..])]
+    #[clap(short, long, default_value = &DEFAULT_COMMENT[..], about="comment included in keys")]
     comment: String,
     #[clap(default_value = "id_rsa", about = "the file path to the private key file")]
     output: String,
@@ -50,7 +50,7 @@ struct Generate {
 #[derive(Clap)]
 #[clap(about = "Check whether private and public keys are valid")]
 struct Check {
-    #[clap(short, takes_value = false)]
+    #[clap(short, long, takes_value = false, about = "don't check public key file")]
     exclude_output: bool,
     #[clap(default_value = "id_rsa", about = "the file path to the private key file")]
     key: String,
