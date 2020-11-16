@@ -7,14 +7,14 @@ use nom::combinator::verify;
 use crate::numbers::{APUInt, APUFloat};
 use nom::multi::many_m_n;
 use crate::traits::{IsPrimeMillerRabin, One, Zero, Bits, MinBits, MaxBits, ModularInverse, Recip, FastExponentWithRecip};
-use rand::distributions::uniform::SampleUniform;
 use rand::distributions::{Uniform, Distribution};
-use std::ops::{AddAssign, Sub, Add, Mul, Div};
 use std::sync::mpsc::channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::iter::repeat;
+use lazy_static::lazy_static;
+use crate::ap_uint;
 
 fn parse_u32(input: &[u8]) -> IResult<&[u8], u32> {
     be_u32(input)
@@ -201,14 +201,24 @@ impl PrivateKey<APUInt> {
     }
 }
 
-pub fn find_prime_range<T>(low: &T, high: &T, num_prime_tests: u64, num_workers: usize) -> T
-    where
-        T: 'static + SampleUniform + Clone + Send + Bits + One + IsPrimeMillerRabin +
-            for<'a> AddAssign<&'a T> + Ord + Zero + From<u64> + Into<u64>,
-        for<'a> &'a T: Add<&'a T, Output=T> + Sub<&'a T, Output=T> {
+lazy_static! {
+    static ref AP_UINT_PRIMES: Vec<APUInt> = [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43,
+    47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149,
+    151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
+    257, 263, 269, 271, 277, 281, 283, 293, 307, 311, 313, 317, 331, 337, 347, 349, 353, 359, 367,
+    373, 379, 383, 389, 397, 401, 409, 419, 421, 431, 433, 439, 443, 449, 457, 461, 463, 467, 479,
+    487, 491, 499, 503, 509, 521, 523, 541, 547, 557, 563, 569, 571, 577, 587, 593, 599, 601, 607,
+    613, 617, 619, 631, 641, 643, 647, 653, 659, 661, 673, 677, 683, 691, 701, 709, 719, 727, 733,
+    739, 743, 751, 757, 761, 769, 773, 787, 797, 809, 811, 821, 823, 827, 829, 839, 853, 857, 859,
+    863, 877, 881, 883, 887, 907, 911, 919, 929, 937, 941, 947, 953, 967, 971, 977, 983, 991, 997]
+    .iter().map(|x| APUInt::from(*x)).collect();
+}
+
+pub fn find_prime_range(low: &APUInt, high: &APUInt,
+                        num_prime_tests: u64, num_workers: usize) -> APUInt {
     let (sender, receiver) = channel();
     let finished = Arc::new(AtomicBool::new(false));
-    let three = &(&T::one() + &T::one()) + &T::one();
+    let three = ap_uint!(3);
     let _workers = (0..num_workers)
         .map(|_| {
             let low = low.clone();
@@ -218,18 +228,24 @@ pub fn find_prime_range<T>(low: &T, high: &T, num_prime_tests: u64, num_workers:
             let sender = sender.clone();
             thread::spawn(move || {
                 let between = Uniform::from(low..=high.clone());
-                let num_prime_tests = T::from(num_prime_tests);
+                let num_prime_tests = APUInt::from(num_prime_tests);
                 let mut rng = rand::thread_rng();
-                while !finished.load(Ordering::Relaxed) {
+                'outer: while !finished.load(Ordering::Relaxed) {
                     let mut n = between.sample(&mut rng);
                     if match n.cmp(&three) {
                         std::cmp::Ordering::Less | std::cmp::Ordering::Equal =>
                             !n.is_one() && !n.is_zero(),
                         std::cmp::Ordering::Greater => {
                             if !n.get(0) {
-                                n += &T::one();
+                                n += APUInt::one();
                                 if n > high {
                                     continue;
+                                }
+                            }
+                            for i in AP_UINT_PRIMES.iter() {
+                                if (&n % i).is_zero() {
+                                    println!("{:?}", i);
+                                    continue 'outer;
                                 }
                             }
                             let times = std::cmp::min(&n - &three, num_prime_tests.clone()).into();
@@ -247,30 +263,24 @@ pub fn find_prime_range<T>(low: &T, high: &T, num_prime_tests: u64, num_workers:
     receiver.recv().unwrap()
 }
 
-impl<T> PrivateKey<T>
-    where
-        T: 'static + SampleUniform + Clone + Send + Bits + IsPrimeMillerRabin + ModularInverse +
-            for<'a> AddAssign<&'a T> + Ord + Zero + From<u64> + Into<u64> + MinBits + MaxBits +
-        One + From<u64>,
-        for<'a> &'a T: Add<&'a T, Output=T> + Sub<&'a T, Output=T> + Div<&'a T, Output=T> +
-        Mul<&'a T, Output=T> {
+impl PrivateKey<APUInt> {
     pub fn generate(num_bits: usize, num_prime_tests: u64,
                     num_workers: usize, comment: String) -> Self {
         let p = find_prime_range(
-            &T::min_bits(num_bits / 2),
-            &T::max_bits(num_bits / 2),
+            &APUInt::min_bits(num_bits / 2),
+            &APUInt::max_bits(num_bits / 2),
             num_prime_tests,
             num_workers,
         );
         let q = find_prime_range(
-            &(&T::min_bits(num_bits) / &p),
-            &(&T::max_bits(num_bits) / &p),
+            &(&APUInt::min_bits(num_bits) / &p),
+            &(&APUInt::max_bits(num_bits) / &p),
             num_prime_tests,
             num_workers,
         );
         let n = &p * &q;
-        let lambda = &(&p - &T::one()) * &(&q - &T::one());
-        let e = T::from(65537u64);
+        let lambda = &(&p - APUInt::one()) * &(&q - APUInt::one());
+        let e = APUInt::from(65537u64);
         let d = e.modular_inverse(&lambda).1;
         let iqmp = q.modular_inverse(&p).1;
         Self { p, q, n, e, d, iqmp, comment }
@@ -316,8 +326,8 @@ pub struct PublicTransformContext {
 
 impl PublicKey<APUInt> {
     pub fn encrypt(&self, input: &[u8],
-                     context: Option<PublicTransformContext>)
-                     -> (Vec<u8>, PublicTransformContext) {
+                   context: Option<PublicTransformContext>)
+                   -> (Vec<u8>, PublicTransformContext) {
         assert!(self.n.n_bits >= 9);
         let context = context.unwrap_or_else(|| PublicTransformContext {
             n_recip: self.n.recip(),
@@ -359,8 +369,8 @@ pub struct PrivateTransformContext {
 
 impl PrivateKey<APUInt> {
     pub fn decrypt(&self, input: &[u8],
-                     context: Option<PrivateTransformContext>)
-                     -> (Vec<u8>, PrivateTransformContext) {
+                   context: Option<PrivateTransformContext>)
+                   -> (Vec<u8>, PrivateTransformContext) {
         assert!(self.n.n_bits >= 9);
         let context = context.unwrap_or_else(|| PrivateTransformContext {
             p_recip: self.p.recip(),
